@@ -1,243 +1,222 @@
-import React, { useState } from "react";
-import { BiEdit, BiCheck } from "react-icons/bi";
+/* eslint-disable no-prototype-builtins */
+
+import React, { useEffect, useRef, useState } from "react";
+import { BiEdit } from "react-icons/bi";
 import Avatar from "./Avatar";
 import { useAuth } from "@/context/AuthContext";
 import Icon from "./Icon";
 
 import { FiPlus } from "react-icons/fi";
-import { IoLogOutOutline, IoClose } from "react-icons/io5";
-import { MdPhotoCamera, MdAddAPhoto, MdDeleteForever } from "react-icons/md";
-import { BsFillCheckCircleFill } from "react-icons/bs";
-import { profileColors } from "@/utils/constants";
+import { IoLogOutOutline } from "react-icons/io5";
 
-import { toast } from "react-toastify";
-import ToastMessage from "@/components/ToastMessage";
-import { doc, updateDoc } from "firebase/firestore";
-import { db, auth, storage } from "@/firebase/firebase";
-import { updateProfile } from "firebase/auth";
-import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
+import {
+  Timestamp,
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+import { db, auth } from "@/firebase/firebase";
+
 import UsersPopup from "./popup/UsersPopup";
+import { useChat } from "@/context/ChatContext";
+
+import EditPofileContainer from "./EditProfileContainer";
 
 const LeftNav = () => {
   const [usersPopup, setUsersPopup] = useState(false);
   const [editProfile, setEditProfile] = useState(false);
-  const [nameEdited, setNameEdited] = useState(false);
+
   const { currentUser, signOutUser, setCurrentUser } = useAuth();
+  const [search, setSearch] = useState("");
+  const [unreadMsgs, setUnreadMsgs] = useState({});
+
+  const isBlockExecutedRef = useRef(false);
+  const isUsersFetchedRef = useRef(false);
+
+  //chat data fro user icons
+  const {
+    users,
+    setUsers,
+    selectedChat,
+    setSelectedChat,
+    chats,
+    setChats,
+    dispatch,
+    data,
+    resetFooterStates,
+  } = useChat();
 
   const authUser = auth.currentUser;
 
-  const uploadImageToFirestore = (file) => {
-    try {
-      if (file) {
-        const storageRef = ref(storage, currentUser.displayName);
-        const uploadTask = uploadBytesResumable(storageRef, file);
+  const handleSelect = (user, selectedChatId) => {
+    setSelectedChat(user);
+    dispatch({ type: "CHANGE_USER", payload: user });
 
-        uploadTask.on(
-          "state_changed",
-          (snapshot) => {
-            const progress =
-              (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            console.log("Upload is " + progress + "% done");
-            switch (snapshot.state) {
-              case "paused":
-                console.log("Upload is paused");
-                break;
-              case "running":
-                console.log("Upload is running");
-                break;
-            }
-          },
-          (error) => {
-            console.error(error);
-          },
-          () => {
-            getDownloadURL(uploadTask.snapshot.ref).then(
-              async (downloadURL) => {
-                console.log("File available at", downloadURL);
-                handleUpdateProfile("photo", downloadURL);
-                await updateProfile(authUser, {
-                  photoURL: downloadURL,
-                });
-              }
-            );
-          }
-        );
+    if (unreadMsgs?.[selectedChatId]?.length > 0) {
+      readChat(selectedChatId);
+    }
+  };
+
+  const readChat = async (chatId) => {
+    const chatRef = doc(db, "chats", chatId);
+    const chatDoc = await getDoc(chatRef);
+
+    let updatedMessages = chatDoc.data().messages.map((m) => {
+      if (m?.read === false) {
+        m.read = true;
       }
-    } catch (error) {
-      console.error(error);
-    }
+      return m;
+    });
+    await updateDoc(chatRef, {
+      messages: updatedMessages,
+    });
   };
 
-  const handleUpdateProfile = (type, value) => {
-    // color, name, photo, photo-remove
-    let obj = { ...currentUser };
-    switch (type) {
-      case "color":
-        obj.color = value;
-        break;
-      case "name":
-        obj.displayName = value;
-        break;
-      case "photo":
-        obj.photoURL = value;
-        break;
-      case "photo-remove":
-        obj.photoURL = null;
-        break;
-      default:
-        break;
-    }
+  const filteredChats = Object.entries(chats || {})
+    .filter(([, chat]) => !chat.hasOwnProperty("chatDeleted"))
+    .filter(
+      ([, chat]) =>
+        chat?.userInfo?.displayName
+          .toLowerCase()
+          .includes(search.toLocaleLowerCase()) ||
+        chat?.lastMessage?.text
+          .toLowerCase()
+          .includes(search.toLocaleLowerCase())
+    )
+    .sort((a, b) => b[1].date - a[1].date);
 
-    try {
-      toast.promise(
-        async () => {
-          const userDocRef = doc(db, "users", currentUser.uid);
-          await updateDoc(userDocRef, obj);
-          setCurrentUser(obj);
+  useEffect(() => {
+    resetFooterStates();
+  }, [data?.chatId]);
 
-          if (type === "photo-remove") {
-            await updateProfile(authUser, {
-              photoURL: null,
-            });
-          }
-          if (type === "name") {
-            await updateProfile(authUser, {
-              displayName: value,
-            });
-            setNameEdited(false);
-          }
-        },
-        {
-          pending: "Updating profile.",
-          success: "Profile updated successfully.",
-          error: "Profile update failed.",
-        },
-        {
-          autoClose: 3000,
-        }
-      );
-    } catch (error) {
-      console.error(error);
-    }
-  };
+  useEffect(() => {
+    onSnapshot(collection(db, "users"), (snapshot) => {
+      const updatedUsers = {};
+      snapshot.forEach((doc) => {
+        updatedUsers[doc.id] = doc.data();
+      });
+      setUsers(updatedUsers);
+      if (!isBlockExecutedRef.current) {
+        isUsersFetchedRef.current = true;
+      }
+    });
+  }, []);
 
-  const onkeyup = (event) => {
-    if (event.target.innerText.trim() !== currentUser.displayName) {
-      // name is edited
-      setNameEdited(true);
-    } else {
-      // name is not edited
-      setNameEdited(false);
-    }
-  };
-  const onkeydown = (event) => {
-    if (event.key === "Enter" && event.keyCode === 13) {
-      event.preventDefault();
-    }
-  };
-
-  const editProfileContainer = () => {
-    return (
-      <div className="relative flex flex-col items-center">
-        <ToastMessage />
-        <Icon
-          size="small"
-          className="absolute top-0 right-5 hover:bg-c2"
-          icon={<IoClose size={20} />}
-          onClick={() => setEditProfile(false)}
-        />
-        <div className="relative group cursor-pointer">
-          <Avatar size="xx-large" user={currentUser} />
-          <div className="w-full h-full rounded-full bg-black/[0.5] absolute top-0 left-0 justify-center items-center hidden group-hover:flex">
-            <label htmlFor="fileUpload">
-              {currentUser.photoURL ? (
-                <MdPhotoCamera size={34} />
-              ) : (
-                <MdAddAPhoto size={34} />
-              )}
-            </label>
-            <input
-              id="fileUpload"
-              type="file"
-              onChange={(e) => uploadImageToFirestore(e.target.files[0])}
-              style={{ display: "none" }}
-            />
-          </div>
-
-          {currentUser.photoURL && (
-            <div
-              className="w-6 h-6 rounded-full bg-red-500 flex justify-center items-center absolute right-0 bottom-0"
-              onClick={() => handleUpdateProfile("photo-remove")}
-            >
-              <MdDeleteForever size={14} />
-            </div>
-          )}
-        </div>
-
-        <div className="mt-5 flex flex-col items-center">
-          <div className="flex items-center gap-2">
-            {!nameEdited && <BiEdit className="text-c3" />}
-            {nameEdited && (
-              <BsFillCheckCircleFill
-                className="text-c4 cursor-pointer"
-                onClick={() => {
-                  handleUpdateProfile(
-                    "name",
-                    document.getElementById("displayNameEdit").innerText
-                  );
-                }}
-              />
-            )}
-            <div
-              contentEditable
-              className="bg-transparent outline-none border-none text-center"
-              id="displayNameEdit"
-              onKeyUp={onkeyup}
-              onKeyDown={onkeydown}
-            >
-              {currentUser.displayName}
-            </div>
-          </div>
-          <span className="text-c3 text-sm">{currentUser.email}</span>
-        </div>
-
-        <div className="grid grid-cols-5 gap-4 mt-5">
-          {profileColors.map((color, index) => (
-            <span
-              key={index}
-              className="w-10 h-10 rounded-full flex items-center justify-center cursor-pointer transition-transform hover:scale-125"
-              style={{ backgroundColor: color }}
-              onClick={() => {
-                handleUpdateProfile("color", color);
-              }}
-            >
-              {color === currentUser.color && <BiCheck size={24} />}
-            </span>
-          ))}
-        </div>
-      </div>
+  useEffect(() => {
+    const documentIds = Object.keys(chats);
+    if (documentIds.length === 0) return;
+    const q = query(
+      collection(db, "chats"),
+      where("__name__", "in", documentIds)
     );
-  };
+
+    const unsub = onSnapshot(q, (snapshot) => {
+      let msgs = {};
+      snapshot.forEach((doc) => {
+        if (doc.id !== data.chatId) {
+          msgs[doc.id] = doc
+            .data()
+            .messages.filter(
+              (m) => m?.read === false && m?.sender !== currentUser.uid
+            );
+        }
+        Object.keys(msgs || {})?.map((c) => {
+          if (msgs[c]?.length < 1) {
+            delete msgs[c];
+          }
+        });
+      });
+      setUnreadMsgs(msgs);
+    });
+    return () => unsub();
+  }, [chats, selectedChat]);
+
+  useEffect(() => {
+    const getChats = () => {
+      const unsub = onSnapshot(doc(db, "userChats", currentUser.uid), (doc) => {
+        if (doc.exists()) {
+          const data = doc.data();
+          setChats(data);
+
+          if (
+            !isBlockExecutedRef.current &&
+            isUsersFetchedRef.current &&
+            users
+          ) {
+            const firstChat = Object.values(data)
+              .filter((chat) => !chat.hasOwnProperty("chatDeleted"))
+              .sort((a, b) => b.date - a.date)[0];
+
+            if (firstChat) {
+              const user = users[firstChat?.userInfo?.uid];
+
+              handleSelect(user);
+
+              const chatId =
+                currentUser.uid > user?.uid
+                  ? currentUser.uid + user?.uid
+                  : user?.uid + currentUser.uid;
+
+              readChat(chatId);
+            }
+
+            isBlockExecutedRef.current = true;
+          }
+        }
+      });
+    };
+    currentUser.uid && getChats();
+  }, [isBlockExecutedRef.current, users]);
 
   return (
     <div
       className={`${
         editProfile ? "w-[350px]" : "w-[80px] items-center"
-      } flex flex-col justify-between py-5 shrink-0 transition-all`}
+      } flex flex-col  justify-between py-5 shrink-0 transition-all`}
     >
       {editProfile ? (
-        editProfileContainer()
+        <EditPofileContainer setEditProfile={setEditProfile} />
       ) : (
         <div
-          className="relative group cursor-pointer"
+          className="relative group cursor-pointer "
           onClick={() => setEditProfile(true)}
         >
           <Avatar size="large" user={currentUser} />
           <div className="w-full h-full rounded-full bg-black/[0.5] absolute top-0 left-0 justify-center items-center hidden group-hover:flex">
             <BiEdit size={14} />
           </div>
+          <hr className="mt-4 border-slate-700 " />
         </div>
       )}
+
+      <ul className="flex flex-col w-full py-8 gap-[2px]">
+        {Object.keys(users || {}).length > 0 &&
+          filteredChats?.map((chat) => {
+            const timestamp = new Timestamp(
+              chat[1].date?.seconds,
+              chat[1].date?.nanoseconds
+            );
+
+            const date = timestamp.toDate();
+
+            const user = users[chat[1].userInfo.uid];
+            return (
+              <li
+                key={chat[0]}
+                onClick={() => handleSelect(user, chat[0])}
+                className={` flex items-center gap-2  hover:bg-c1 p-4 cursor-pointer ${
+                  selectedChat?.uid === user?.uid ? "bg-c1" : ""
+                }`}
+              >
+                <Avatar size="x-large" user={user} />
+              </li>
+            );
+          })}
+      </ul>
 
       <div
         className={`flex gap-5 ${

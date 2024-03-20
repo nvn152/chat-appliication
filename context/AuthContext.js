@@ -130,8 +130,6 @@ export const AuthContextProvider = ({ children }) => {
       });
     }
 
-    console.log(user.uid);
-
     const userDoc = await getDoc(doc(db, "users", user.uid));
 
     setCurrentUser(userDoc.data());
